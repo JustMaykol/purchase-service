@@ -1,13 +1,27 @@
+import httpx
+
 from uuid import uuid4
 from pydantic import BaseModel
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+
 from pymongo import MongoClient
 
 app = FastAPI(
     title='Purchase API',
     description='Purchase API with FastAPI and MongoDB',
 )
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=['*'],
+    allow_credentials=True,
+    allow_methods=['*'],
+    allow_headers=['*'],
+)
+
+CAR_API = 'http://127.0.0.1:8000/car/'
 
 
 class Purchase(BaseModel):
@@ -21,16 +35,25 @@ class Purchase(BaseModel):
     discount: int
 
 
-client = MongoClient('mongodb://localhost:27017/')
-db = client['current']['purchase']
+try:
+    client = MongoClient('mongodb://localhost:27017/')
+    db = client['current']['purchase']
+except Exception as exception:
+    print(f"Error connecting to MongoDB: {exception}")
 
 
 # purchase crud
 
-@app.post('/purchase', description='Method to create a new Purchase')
+@app.post(
+    '/purchase',
+    description='Create a new purchase record and update the availability status of the car.',
+    response_description='A message indicating the creation status of the purchase record.'
+)
 async def create_purchase(purchase: Purchase):
+    purchase_id = str(uuid4())
+
     db.insert_one({
-        '_id': str(uuid4()),
+        '_id': purchase_id,
 
         'user_id': purchase.user_id,
         'car_id': purchase.car_id,
@@ -42,27 +65,48 @@ async def create_purchase(purchase: Purchase):
         'discount': purchase.discount
     })
 
-    return {'message': 'created'}, 200
+    try:
+        async with httpx.AsyncClient() as client:
+            get_response = await client.get(f'{CAR_API}{purchase.car_id}')
+            get_response.raise_for_status()
+
+            car = get_response.json()
+            car['available'] = False
+
+            put_response = await client.put(f'{CAR_API}{purchase.car_id}', json=car)
+            put_response.raise_for_status()
+
+            return {'message': f'created: {purchase_id}'}, 200
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=str(e))
 
 
-@app.get('/purchase/{_id}', description='Method to read a Purchase by id')
-async def read_purchase(_id: str):
-    document = db.find_one({'_id': _id})
+@app.get(
+    '/purchase/{purchase_id}',
+    description='Retrieve a purchase record by its ID.',
+    response_description='The purchase record if found, or a message indicating it was not found.'
+)
+async def read_purchase(purchase_id: str):
+    document = db.find_one({'_id': purchase_id})
 
     if not document:
-        return {'message': 'purchase not found'}, 404
+        return {'message': f'purchase \'{purchase_id}\'  not found'}, 404
 
     return document, 200
 
 
-@app.put('/purchase/{_id}', description='Method to update a Purchase by id')
-async def update_purchase(_id: str, purchase: Purchase):
-    document = db.find_one({'_id': _id})
+@app.put(
+    '/purchase/{purchase_id}',
+    description='Update an existing purchase record by its ID.',
+    response_description='A message indicating the update status of the purchase record.'
+)
+async def update_purchase(purchase_id: str, purchase: Purchase):
+    document = db.find_one({'_id': purchase_id})
 
     if not document:
-        return {'message': 'purchase not found'}, 404
+        return {'message': f'purchase \'{purchase_id}\'  not found'}, 404
 
-    db.update_one({'_id': _id}, {
+    db.update_one({'_id': purchase_id}, {
         '$set': {
             'user_id': purchase.user_id,
             'car_id': purchase.car_id,
@@ -75,25 +119,33 @@ async def update_purchase(_id: str, purchase: Purchase):
         }
     })
 
-    return {'message': 'updated'}, 200
+    return {'message': f'updated: {purchase_id}'}, 200
 
 
-@app.delete('/purchase/{_id}', description='Method to delete a Purchase by id')
-async def delete_purchase(_id):
-    document = db.find_one({'_id': _id})
+@app.delete(
+    '/purchase/{purchase_id}',
+    description='Delete a purchase record by its ID.',
+    response_description='A message indicating the deletion status of the purchase record.'
+)
+async def delete_purchase(purchase_id):
+    document = db.find_one({'_id': purchase_id})
 
     if not document:
-        return {'message': 'purchase not found'}, 404
+        return {'message': f'purchase \'{purchase_id}\'  not found'}, 404
 
-    db.delete_one({'_id': _id})
+    db.delete_one({'_id': purchase_id})
 
-    return {'message': 'deleted'}, 200
+    return {'message': f'deleted: {purchase_id}'}, 200
 
 
 # purchases search
 
 
-@app.get('/purchase', description='Method to collect all purchases')
+@app.get(
+    '/purchases',
+    description='Retrieve all purchase records.',
+    response_description='A list of all purchase records, or a message indicating that there are no records.'
+)
 async def read_purchase():
     purchases = list(db.find())
 
@@ -101,3 +153,17 @@ async def read_purchase():
         return {'message': 'empty'}, 404
 
     return purchases
+
+
+@app.get(
+    '/purchases/{user_id}',
+    description='Retrieve all purchase records for a specific user.',
+    response_description='A list of purchase records for the specified user, or a message indicating that no records were found.'
+)
+async def read_purchase(user_id: str):
+    purchases = list(db.find({'user_id': user_id}))
+
+    if not purchases:
+        return {'message': f'purchases for \'{user_id}\' not found'}, 404
+
+    return purchases, 200
