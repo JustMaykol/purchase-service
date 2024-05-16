@@ -32,12 +32,11 @@ class Purchase(BaseModel):
     car_name: str
 
     price: int
-    discount: int
 
 
 try:
     client = MongoClient('mongodb://localhost:27017/')
-    db = client['current']['purchase']
+    db = client['purchase']['production']
 except Exception as exception:
     print(f"Error connecting to MongoDB: {exception}")
 
@@ -62,7 +61,6 @@ async def create_purchase(purchase: Purchase):
         'car_name': purchase.car_name,
 
         'price': purchase.price,
-        'discount': purchase.discount
     })
 
     try:
@@ -115,7 +113,6 @@ async def update_purchase(purchase_id: str, purchase: Purchase):
             'car_name': purchase.car_name,
 
             'price': purchase.price,
-            'discount': purchase.discount
         }
     })
 
